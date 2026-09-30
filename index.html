@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Trình Trích Xuất Hỏi Đáp RSS</title>
+    <title>Hệ Thống Thu Thập Hỏi Đáp RSS (Bản Nâng Cấp)</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f0f2f5; color: #333; line-height: 1.6; padding: 20px; }
         .container { max-width: 900px; margin: auto; background: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 5px 15px rgba(0,0,0,0.05); }
@@ -16,9 +16,11 @@
         #downloadBtn:hover { background-color: #2b803e; }
         #clearBtn { background-color: #ea4335; }
         #clearBtn:hover { background-color: #c5221f; }
-        #preview { background: #202124; color: #e8eaed; padding: 20px; border-radius: 8px; height: 400px; overflow-y: auto; white-space: pre-wrap; font-family: 'Courier New', Courier, monospace; display: none; margin-top: 20px; border-left: 5px solid #34a853; }
+        #preview { background: #202124; color: #e8eaed; padding: 20px; border-radius: 8px; height: 500px; overflow-y: auto; white-space: pre-wrap; font-family: 'Courier New', Courier, monospace; display: none; margin-top: 20px; border-left: 5px solid #34a853; }
         .status { margin-top: 10px; font-weight: bold; color: #d93025; }
-        .highlight-new { color: #fbbc04; font-weight: bold; }
+        .qa-block { background-color: #2d3748; padding: 15px; margin-bottom: 15px; border-radius: 5px; border-left: 4px solid #4299e1; }
+        .q-part { color: #e2e8f0; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px dashed #4a5568; }
+        .a-part { color: #9ae6b4; }
     </style>
 </head>
 <body>
@@ -27,13 +29,13 @@
     <h1>Hệ Thống Thu Thập Hỏi Đáp RSS</h1>
     
     <div class="box">
-        <p><strong>Nguồn dữ liệu:</strong> Bình luận / Hỏi đáp (Gắn cứng qua Netlify Rewrites)</p>
+        <p><strong>Nguồn dữ liệu:</strong> Tích hợp tự động ghép nối Câu hỏi & Câu trả lời.</p>
         
-        <label><strong>Tùy chọn: Tải lên tệp TXT cũ để so sánh:</strong></label><br>
+        <label><strong>Tải lên tệp TXT cũ để so sánh (Nếu có):</strong></label><br>
         <input type="file" id="oldTxtInput" accept=".txt" style="margin-top: 10px; padding: 5px;">
         
         <div class="btn-group">
-            <button onclick="fetchAndProcessRSS()">🔄 Tải & Xử lý Dữ liệu Mới</button>
+            <button onclick="fetchAndProcessRSS()">🔄 Tải & Xử lý Dữ liệu</button>
             <button id="downloadBtn" onclick="downloadTXT()">⬇️ Tải xuống Tệp TXT</button>
             <button id="clearBtn" onclick="clearHistory()">🗑️ Xóa bộ nhớ tạm</button>
         </div>
@@ -44,7 +46,6 @@
 </div>
 
 <script>
-    // Gọi qua đường dẫn nội bộ đã được cấu hình Proxy trong file _redirects của Netlify
     const FETCH_URL = "/api/rss"; 
     
     let finalOutputText = "";
@@ -70,7 +71,7 @@
         const oldTxtInput = document.getElementById('oldTxtInput');
         
         statusText.style.color = "#1a73e8";
-        statusText.innerText = "Đang tải dữ liệu, vui lòng đợi...";
+        statusText.innerText = "Đang phân tích và ghép nối dữ liệu...";
         previewBox.style.display = "none";
         document.getElementById('downloadBtn').style.display = "none";
         
@@ -95,37 +96,41 @@
             const parser = new DOMParser();
             const xmlDoc = parser.parseFromString(textContent, "text/xml");
             
-            const items = xmlDoc.querySelectorAll("item");
+            const items = Array.from(xmlDoc.querySelectorAll("item"));
             if (items.length === 0) {
-                statusText.innerText = "Không tìm thấy dữ liệu <item> nào.";
-                statusText.style.color = "red";
+                statusText.innerText = "Không tìm thấy dữ liệu.";
                 return;
             }
 
-            const now = new Date();
-            finalOutputText = `=== TỔNG HỢP HỎI ĐÁP RSS ===\n`;
-            finalOutputText += `Ngày xuất tệp: ${now.toLocaleString('vi-VN')}\n`;
-            finalOutputText += `==================================================\n\n`;
-
-            let newItemsCount = 0;
+            // 1. Phân loại dữ liệu
+            let questions = [];
+            let answers = [];
             let currentGuidsToSave = new Set(oldGuids);
+            let newItemsCount = 0;
 
             items.forEach(item => {
-                const title = item.querySelector("title") ? item.querySelector("title").textContent.trim() : "";
                 const link = item.querySelector("link") ? item.querySelector("link").textContent.trim() : "";
-                const pubDate = item.querySelector("pubDate") ? item.querySelector("pubDate").textContent.trim() : "";
-                
                 const guidNode = item.querySelector("guid");
                 const guid = guidNode ? guidNode.textContent.trim() : link;
-                
+                const pubDate = item.querySelector("pubDate") ? item.querySelector("pubDate").textContent.trim() : "";
                 const creatorNode = item.getElementsByTagNameNS("*", "creator")[0];
                 const creator = creatorNode ? creatorNode.textContent.trim() : "Khách ẩn danh";
-
                 const contentNode = item.getElementsByTagNameNS("*", "encoded")[0] || item.querySelector("description");
                 let htmlContent = contentNode ? contentNode.textContent : "";
                 
+                // Lọc HTML
                 let tempDiv = document.createElement("div");
                 tempDiv.innerHTML = htmlContent;
+                
+                // Xử lý logic nối link cho câu trả lời
+                let replyLink = null;
+                let replyToName = null;
+                const linkElement = tempDiv.querySelector('a');
+                if (linkElement && htmlContent.includes('回复给')) {
+                    replyLink = linkElement.href;
+                    replyToName = linkElement.textContent;
+                }
+
                 let plainText = tempDiv.innerText || tempDiv.textContent;
                 plainText = plainText.trim().replace(/\n{3,}/g, '\n\n');
 
@@ -135,34 +140,89 @@
                     currentGuidsToSave.add(guid);
                 }
 
-                if (isNew) finalOutputText += `[🌟 BÀI MỚI CẬP NHẬT]\n`;
-                
-                finalOutputText += `[Mã bài: ${guid}]\n`;
-                finalOutputText += `⏱ Thời gian: ${formatDate(pubDate)}\n`;
-                finalOutputText += `📌 Tiêu đề RSS: ${title}\n`;
-                finalOutputText += `🔗 Link tham chiếu: ${link}\n\n`;
+                const dataObj = {
+                    guid, link, pubDate: formatDate(pubDate), creator, text: plainText, isNew, replyLink, replyToName
+                };
 
                 if (creator.includes("东方台") || creator.toLowerCase().includes("admin")) {
-                    finalOutputText += `[PHẦN TRẢ LỜI - BỞI: ${creator}]\n${plainText}\n`;
+                    answers.push(dataObj);
                 } else {
-                    finalOutputText += `[PHẦN CÂU HỎI - BỞI: ${creator}]\n${plainText}\n`;
+                    questions.push(dataObj);
                 }
-                
-                finalOutputText += `\n--------------------------------------------------------------------------------\n\n`;
             });
+
+            // 2. Thuật toán Ghép nối
+            let pairedOutput = "";
+            let standaloneOutput = "";
+
+            answers.forEach(ans => {
+                let matchedQuestion = null;
+                
+                // Cố gắng tìm câu hỏi dựa trên link tham chiếu
+                if (ans.replyLink) {
+                    matchedQuestion = questions.find(q => q.link === ans.replyLink);
+                }
+
+                let block = "";
+                if (ans.isNew) block += `[🌟 MỚI CẬP NHẬT]\n`;
+                block += `[Mã bài: ${ans.guid}]\n`;
+                
+                if (matchedQuestion) {
+                    // Nếu ghép thành công
+                    block += `=== HỎI ===\n`;
+                    block += `👤 Người hỏi: ${matchedQuestion.creator} | ⏱ ${matchedQuestion.pubDate}\n`;
+                    block += `${matchedQuestion.text}\n\n`;
+                    block += `=== ĐÁP ===\n`;
+                    block += `👤 Người trả lời: ${ans.creator} | ⏱ ${ans.pubDate}\n`;
+                    block += `${ans.text}\n`;
+                    
+                    // Xóa câu hỏi đã được ghép khỏi mảng để tránh lặp
+                    questions = questions.filter(q => q.guid !== matchedQuestion.guid);
+                } else {
+                    // Nếu câu trả lời không tìm thấy câu hỏi tương ứng trong luồng RSS hiện tại
+                    block += `=== ĐÁP (Không tìm thấy câu hỏi gốc trong RSS hiện tại) ===\n`;
+                    if (ans.replyToName) {
+                        block += `📌 Đang trả lời cho: ${ans.replyToName} (Link tham chiếu: ${ans.replyLink})\n`;
+                    }
+                    block += `👤 Người trả lời: ${ans.creator} | ⏱ ${ans.pubDate}\n`;
+                    block += `${ans.text}\n`;
+                }
+                block += `\n----------------------------------------------------------------------\n\n`;
+                pairedOutput += block;
+            });
+
+            // 3. Xử lý các câu hỏi chưa được trả lời
+            questions.forEach(q => {
+                let block = "";
+                if (q.isNew) block += `[🌟 MỚI CẬP NHẬT]\n`;
+                block += `[Mã bài: ${q.guid}]\n`;
+                block += `=== HỎI (Chưa có phản hồi) ===\n`;
+                block += `👤 Người hỏi: ${q.creator} | ⏱ ${q.pubDate}\n`;
+                block += `${q.text}\n`;
+                block += `\n----------------------------------------------------------------------\n\n`;
+                standaloneOutput += block;
+            });
+
+            // Tổng hợp Output
+            const now = new Date();
+            finalOutputText = `=== TỔNG HỢP HỎI ĐÁP RSS (ĐÃ ĐƯỢC GHÉP NỐI) ===\n`;
+            finalOutputText += `Ngày xuất tệp: ${now.toLocaleString('vi-VN')}\n`;
+            finalOutputText += `==================================================\n\n`;
+            finalOutputText += pairedOutput + standaloneOutput;
 
             localStorage.setItem('saved_rss_guids', JSON.stringify(Array.from(currentGuidsToSave)));
 
-            statusText.innerText = `✅ Hoàn tất! Lấy được ${items.length} mục. Phát hiện ${newItemsCount} mục MỚI.`;
+            statusText.innerText = `✅ Đã phân tích ${items.length} mục. Tìm thấy ${newItemsCount} mục MỚI.`;
             statusText.style.color = "#34a853";
             
-            let previewHTML = finalOutputText.replace(/\[🌟 BÀI MỚI CẬP NHẬT\]/g, '<span class="highlight-new">[🌟 BÀI MỚI CẬP NHẬT]</span>');
-            previewBox.innerHTML = previewHTML;
+            previewBox.innerHTML = finalOutputText.replace(/\[🌟 MỚI CẬP NHẬT\]/g, '<span class="highlight-new">[🌟 MỚI CẬP NHẬT]</span>')
+                                                  .replace(/=== HỎI/g, '<span style="color:#4299e1; font-weight:bold;">=== HỎI</span>')
+                                                  .replace(/=== ĐÁP/g, '<span style="color:#48bb78; font-weight:bold;">=== ĐÁP</span>');
             previewBox.style.display = "block";
             document.getElementById('downloadBtn').style.display = "inline-block";
 
         } catch (error) {
-            statusText.innerText = "Không thể lấy dữ liệu. Hãy đảm bảo bạn đã triển khai file _redirects trên Netlify hoặc kiểm tra kết nối.";
+            statusText.innerText = "Lỗi khi lấy dữ liệu. Hãy đảm bảo bạn đã cấu hình _redirects trên Netlify.";
             statusText.style.color = "red";
             console.error(error);
         }
@@ -172,7 +232,7 @@
         if(!dateString) return "Không rõ thời gian";
         try {
             const d = new Date(dateString);
-            return d.toLocaleString('vi-VN', { weekday: 'long', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute:'2-digit', second:'2-digit' });
+            return d.toLocaleString('vi-VN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute:'2-digit' });
         } catch(e) {
             return dateString;
         }
@@ -187,7 +247,7 @@
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `HoiDap_BinhLuan_${dateStr}.txt`;
+        a.download = `HoiDap_BinhLuan_GhepNoi_${dateStr}.txt`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -200,8 +260,6 @@
             oldGuids.clear();
             document.getElementById('statusText').innerText = "Đã xóa lịch sử. Vui lòng chạy lại.";
             document.getElementById('statusText').style.color = "#ea4335";
-            document.getElementById('preview').style.display = "none";
-            document.getElementById('downloadBtn').style.display = "none";
         }
     }
 </script>
