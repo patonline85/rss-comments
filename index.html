@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trình Trích Xuất Hỏi Đáp RSS</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f0f2f5; color: #333; line-height: 1.6; padding: 20px; }
+        .container { max-width: 900px; margin: auto; background: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 5px 15px rgba(0,0,0,0.05); }
+        h1 { color: #1a73e8; text-align: center; border-bottom: 2px solid #e8eaed; padding-bottom: 10px; }
+        .box { background: #f8f9fa; border: 1px solid #dadce0; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+        .btn-group { display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap; }
+        button { background-color: #1a73e8; color: white; border: none; padding: 12px 20px; font-size: 15px; border-radius: 6px; cursor: pointer; font-weight: bold; transition: 0.2s; }
+        button:hover { background-color: #1557b0; }
+        #downloadBtn { background-color: #34a853; display: none; }
+        #downloadBtn:hover { background-color: #2b803e; }
+        #clearBtn { background-color: #ea4335; }
+        #clearBtn:hover { background-color: #c5221f; }
+        #preview { background: #202124; color: #e8eaed; padding: 20px; border-radius: 8px; height: 400px; overflow-y: auto; white-space: pre-wrap; font-family: 'Courier New', Courier, monospace; display: none; margin-top: 20px; border-left: 5px solid #34a853; }
+        .status { margin-top: 10px; font-weight: bold; color: #d93025; }
+        .highlight-new { color: #fbbc04; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Hệ Thống Thu Thập Hỏi Đáp RSS</h1>
+    
+    <div class="box">
+        <p><strong>Nguồn dữ liệu:</strong> Bình luận / Hỏi đáp (Gắn cứng qua Netlify Rewrites)</p>
+        
+        <label><strong>Tùy chọn: Tải lên tệp TXT cũ để so sánh:</strong></label><br>
+        <input type="file" id="oldTxtInput" accept=".txt" style="margin-top: 10px; padding: 5px;">
+        
+        <div class="btn-group">
+            <button onclick="fetchAndProcessRSS()">🔄 Tải & Xử lý Dữ liệu Mới</button>
+            <button id="downloadBtn" onclick="downloadTXT()">⬇️ Tải xuống Tệp TXT</button>
+            <button id="clearBtn" onclick="clearHistory()">🗑️ Xóa bộ nhớ tạm</button>
+        </div>
+        <div id="statusText" class="status"></div>
+    </div>
+
+    <div id="preview"></div>
+</div>
+
+<script>
+    // Gọi qua đường dẫn nội bộ đã được cấu hình Proxy trong file _redirects của Netlify
+    const FETCH_URL = "/api/rss"; 
+    
+    let finalOutputText = "";
+    let oldGuids = new Set();
+
+    function parseOldTxtFile(file, callback) {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            const text = e.target.result;
+            const regex = /\[Mã bài:\s*(.+?)\]/g;
+            let match;
+            while ((match = regex.exec(text)) !== null) {
+                oldGuids.add(match[1].trim());
+            }
+            callback();
+        };
+        reader.readAsText(file);
+    }
+
+    async function fetchAndProcessRSS() {
+        const statusText = document.getElementById('statusText');
+        const previewBox = document.getElementById('preview');
+        const oldTxtInput = document.getElementById('oldTxtInput');
+        
+        statusText.style.color = "#1a73e8";
+        statusText.innerText = "Đang tải dữ liệu, vui lòng đợi...";
+        previewBox.style.display = "none";
+        document.getElementById('downloadBtn').style.display = "none";
+        
+        let savedGuids = JSON.parse(localStorage.getItem('saved_rss_guids')) || [];
+        savedGuids.forEach(id => oldGuids.add(id));
+
+        if (oldTxtInput.files.length > 0) {
+            parseOldTxtFile(oldTxtInput.files[0], () => {
+                downloadAndParseXML(statusText, previewBox);
+            });
+        } else {
+            downloadAndParseXML(statusText, previewBox);
+        }
+    }
+
+    async function downloadAndParseXML(statusText, previewBox) {
+        try {
+            const response = await fetch(FETCH_URL);
+            if (!response.ok) throw new Error(`Lỗi HTTP: ${response.status}`);
+            
+            const textContent = await response.text();
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(textContent, "text/xml");
+            
+            const items = xmlDoc.querySelectorAll("item");
+            if (items.length === 0) {
+                statusText.innerText = "Không tìm thấy dữ liệu <item> nào.";
+                statusText.style.color = "red";
+                return;
+            }
+
+            const now = new Date();
+            finalOutputText = `=== TỔNG HỢP HỎI ĐÁP RSS ===\n`;
+            finalOutputText += `Ngày xuất tệp: ${now.toLocaleString('vi-VN')}\n`;
+            finalOutputText += `==================================================\n\n`;
+
+            let newItemsCount = 0;
+            let currentGuidsToSave = new Set(oldGuids);
+
+            items.forEach(item => {
+                const title = item.querySelector("title") ? item.querySelector("title").textContent.trim() : "";
+                const link = item.querySelector("link") ? item.querySelector("link").textContent.trim() : "";
+                const pubDate = item.querySelector("pubDate") ? item.querySelector("pubDate").textContent.trim() : "";
+                
+                const guidNode = item.querySelector("guid");
+                const guid = guidNode ? guidNode.textContent.trim() : link;
+                
+                const creatorNode = item.getElementsByTagNameNS("*", "creator")[0];
+                const creator = creatorNode ? creatorNode.textContent.trim() : "Khách ẩn danh";
+
+                const contentNode = item.getElementsByTagNameNS("*", "encoded")[0] || item.querySelector("description");
+                let htmlContent = contentNode ? contentNode.textContent : "";
+                
+                let tempDiv = document.createElement("div");
+                tempDiv.innerHTML = htmlContent;
+                let plainText = tempDiv.innerText || tempDiv.textContent;
+                plainText = plainText.trim().replace(/\n{3,}/g, '\n\n');
+
+                let isNew = !oldGuids.has(guid);
+                if (isNew) {
+                    newItemsCount++;
+                    currentGuidsToSave.add(guid);
+                }
+
+                if (isNew) finalOutputText += `[🌟 BÀI MỚI CẬP NHẬT]\n`;
+                
+                finalOutputText += `[Mã bài: ${guid}]\n`;
+                finalOutputText += `⏱ Thời gian: ${formatDate(pubDate)}\n`;
+                finalOutputText += `📌 Tiêu đề RSS: ${title}\n`;
+                finalOutputText += `🔗 Link tham chiếu: ${link}\n\n`;
+
+                if (creator.includes("东方台") || creator.toLowerCase().includes("admin")) {
+                    finalOutputText += `[PHẦN TRẢ LỜI - BỞI: ${creator}]\n${plainText}\n`;
+                } else {
+                    finalOutputText += `[PHẦN CÂU HỎI - BỞI: ${creator}]\n${plainText}\n`;
+                }
+                
+                finalOutputText += `\n--------------------------------------------------------------------------------\n\n`;
+            });
+
+            localStorage.setItem('saved_rss_guids', JSON.stringify(Array.from(currentGuidsToSave)));
+
+            statusText.innerText = `✅ Hoàn tất! Lấy được ${items.length} mục. Phát hiện ${newItemsCount} mục MỚI.`;
+            statusText.style.color = "#34a853";
+            
+            let previewHTML = finalOutputText.replace(/\[🌟 BÀI MỚI CẬP NHẬT\]/g, '<span class="highlight-new">[🌟 BÀI MỚI CẬP NHẬT]</span>');
+            previewBox.innerHTML = previewHTML;
+            previewBox.style.display = "block";
+            document.getElementById('downloadBtn').style.display = "inline-block";
+
+        } catch (error) {
+            statusText.innerText = "Không thể lấy dữ liệu. Hãy đảm bảo bạn đã triển khai file _redirects trên Netlify hoặc kiểm tra kết nối.";
+            statusText.style.color = "red";
+            console.error(error);
+        }
+    }
+
+    function formatDate(dateString) {
+        if(!dateString) return "Không rõ thời gian";
+        try {
+            const d = new Date(dateString);
+            return d.toLocaleString('vi-VN', { weekday: 'long', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute:'2-digit', second:'2-digit' });
+        } catch(e) {
+            return dateString;
+        }
+    }
+
+    function downloadTXT() {
+        if (!finalOutputText) return;
+        const now = new Date();
+        const dateStr = `${now.getFullYear()}${(now.getMonth()+1).toString().padStart(2,'0')}${now.getDate().toString().padStart(2,'0')}_${now.getHours()}h${now.getMinutes()}`;
+        
+        const blob = new Blob([finalOutputText], { type: "text/plain;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `HoiDap_BinhLuan_${dateStr}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    function clearHistory() {
+        if(confirm("Xóa lịch sử ghi nhớ? Các bài viết sẽ được tính là bài mới trong lần quét tới.")) {
+            localStorage.removeItem('saved_rss_guids');
+            oldGuids.clear();
+            document.getElementById('statusText').innerText = "Đã xóa lịch sử. Vui lòng chạy lại.";
+            document.getElementById('statusText').style.color = "#ea4335";
+            document.getElementById('preview').style.display = "none";
+            document.getElementById('downloadBtn').style.display = "none";
+        }
+    }
+</script>
+
+</body>
+</html>
