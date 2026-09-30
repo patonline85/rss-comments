@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hệ Thống Thu Thập Hỏi Đáp RSS (Có Bộ Nhớ)</title>
+    <title>Hệ Thống Thu Thập Hỏi Đáp API (Bản Hoàn Hảo)</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f0f2f5; color: #333; line-height: 1.6; padding: 20px; }
         .container { max-width: 900px; margin: auto; background: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 5px 15px rgba(0,0,0,0.05); }
@@ -23,15 +23,15 @@
 <body>
 
 <div class="container">
-    <h1>Hệ Thống Thu Thập Hỏi Đáp RSS</h1>
+    <h1>Thu Thập Hỏi Đáp qua REST API</h1>
     
     <div class="box">
-        <p><strong>Cơ chế hoạt động:</strong> Ứng dụng sẽ tự động ghi nhớ các câu hỏi vào bộ nhớ trình duyệt để chờ ghép nối với câu trả lời trong các lần quét sau.</p>
+        <p><strong>Cơ chế:</strong> Ứng dụng đọc trực tiếp dữ liệu JSON từ hệ thống, tự động ghép nối chuẩn xác 100% bằng mã ID nội bộ.</p>
         
         <div class="btn-group">
-            <button onclick="fetchAndProcessRSS()">🔄 Tải & Xử lý Dữ liệu Mới</button>
+            <button onclick="fetchAndProcessAPI()">🔄 Tải & Quét Dữ liệu</button>
             <button id="downloadBtn" onclick="downloadTXT()">⬇️ Tải xuống Tệp TXT</button>
-            <button id="clearBtn" onclick="clearHistory()">🗑️ Xóa toàn bộ bộ nhớ</button>
+            <button id="clearBtn" onclick="clearHistory()">🗑️ Xóa Database</button>
         </div>
         <div id="statusText" class="status"></div>
     </div>
@@ -40,18 +40,20 @@
 </div>
 
 <script>
-    const FETCH_URL = "/api/rss"; // Giữ nguyên cấu hình proxy của Netlify
+    const FETCH_URL = "/api/comments"; 
     
     let finalOutputText = "";
-    let processedGuids = new Set(JSON.parse(localStorage.getItem('processed_rss_guids')) || []);
-    let questionDB = JSON.parse(localStorage.getItem('question_db')) || [];
+    
+    // Khởi tạo Database từ LocalStorage
+    let processedIds = new Set(JSON.parse(localStorage.getItem('processed_api_ids')) || []);
+    let questionDB = JSON.parse(localStorage.getItem('api_question_db')) || {};
 
-    async function fetchAndProcessRSS() {
+    async function fetchAndProcessAPI() {
         const statusText = document.getElementById('statusText');
         const previewBox = document.getElementById('preview');
         
         statusText.style.color = "#1a73e8";
-        statusText.innerText = "Đang phân tích và truy xuất dữ liệu ghép nối...";
+        statusText.innerText = "Đang tải và đồng bộ dữ liệu JSON...";
         previewBox.style.display = "none";
         document.getElementById('downloadBtn').style.display = "none";
 
@@ -59,112 +61,104 @@
             const response = await fetch(FETCH_URL);
             if (!response.ok) throw new Error(`Lỗi HTTP: ${response.status}`);
             
-            const textContent = await response.text();
-            const parser = new DOMParser();
-            const xmlDoc = parser.parseFromString(textContent, "text/xml");
+            const comments = await response.json();
             
-            const items = Array.from(xmlDoc.querySelectorAll("item"));
-            if (items.length === 0) {
-                statusText.innerText = "Không tìm thấy dữ liệu.";
+            if (!Array.isArray(comments) || comments.length === 0) {
+                statusText.innerText = "Không tìm thấy dữ liệu hoặc link chưa trả về JSON.";
                 return;
             }
 
-            let questions = [];
-            let answers = [];
             let newItemsCount = 0;
+            let answers = [];
+            let currentQuestions = [];
 
-            // 1. Phân loại và Cập nhật Bộ nhớ Câu hỏi
-            items.forEach(item => {
-                const link = item.querySelector("link") ? item.querySelector("link").textContent.trim() : "";
-                const guidNode = item.querySelector("guid");
-                const guid = guidNode ? guidNode.textContent.trim() : link;
-                const pubDate = item.querySelector("pubDate") ? item.querySelector("pubDate").textContent.trim() : "";
-                const creatorNode = item.getElementsByTagNameNS("*", "creator")[0];
-                const creator = creatorNode ? creatorNode.textContent.trim() : "Khách ẩn danh";
-                const contentNode = item.getElementsByTagNameNS("*", "encoded")[0] || item.querySelector("description");
-                let htmlContent = contentNode ? contentNode.textContent : "";
+            // 1. Phân loại dữ liệu và làm sạch HTML
+            comments.forEach(comment => {
+                const id = comment.id;
+                const parentId = comment.parent;
+                const author = comment.author_name || "Khách ẩn danh";
+                const date = comment.date;
+                const link = comment.link;
                 
+                // Làm sạch HTML
                 let tempDiv = document.createElement("div");
-                tempDiv.innerHTML = htmlContent;
-                
-                let replyLink = null;
-                let replyToName = null;
-                const linkElement = tempDiv.querySelector('a');
-                if (linkElement && htmlContent.includes('回复给')) {
-                    replyLink = linkElement.href;
-                    replyToName = linkElement.textContent;
-                }
-
+                tempDiv.innerHTML = comment.content.rendered;
                 let plainText = tempDiv.innerText || tempDiv.textContent;
                 plainText = plainText.trim().replace(/\n{3,}/g, '\n\n');
 
-                let isNew = !processedGuids.has(guid);
+                let isNew = !processedIds.has(id);
                 if (isNew) {
                     newItemsCount++;
-                    processedGuids.add(guid);
+                    processedIds.add(id);
                 }
 
-                const dataObj = { guid, link, pubDate: formatDate(pubDate), creator, text: plainText, isNew, replyLink, replyToName };
+                const dataObj = { id, parentId, date: formatAPIDate(date), author, text: plainText, link, isNew };
 
-                if (creator.includes("东方台") || creator.toLowerCase().includes("admin")) {
-                    // Chỉ xử lý câu trả lời MỚI để xuất ra file
+                // Phân loại: Dựa vào parent hoặc tên người dùng
+                if (parentId !== 0 || author.includes("东方台") || author.toLowerCase().includes("admin")) {
+                    // Nếu là trả lời và là bài mới, đưa vào danh sách xuất
                     if (isNew) answers.push(dataObj);
                 } else {
-                    // Lưu mọi câu hỏi vào DB (nếu chưa có) để chờ trả lời
-                    if (!questionDB.some(q => q.link === link)) {
-                        questionDB.push(dataObj);
+                    // Cập nhật câu hỏi vào Database để ghi nhớ
+                    if (!questionDB[id]) {
+                        questionDB[id] = dataObj;
                     }
-                    if (isNew) questions.push(dataObj);
+                    if (isNew) currentQuestions.push(dataObj);
                 }
             });
 
-            // Giữ cho Database câu hỏi không quá lớn (Lưu 500 câu gần nhất)
-            if (questionDB.length > 500) questionDB = questionDB.slice(-500);
-            
-            // Lưu lại vào trình duyệt
-            localStorage.setItem('processed_rss_guids', JSON.stringify(Array.from(processedGuids)));
-            localStorage.setItem('question_db', JSON.stringify(questionDB));
-
-            // 2. Thuật toán Ghép nối thông minh từ Database
+            // 2. Thuật toán Ghép nối chuẩn xác từ Database
             let pairedOutput = "";
             let standaloneOutput = "";
 
+            // Xử lý các câu trả lời mới
             answers.forEach(ans => {
-                // Lục tìm câu hỏi trong toàn bộ Database đã lưu (Không chỉ trong 10 bài hiện tại)
-                let matchedQuestion = questionDB.find(q => q.link === ans.replyLink);
+                // Tìm kiếm gốc rễ câu hỏi trong Database bằng ID chính xác
+                let matchedQuestion = questionDB[ans.parentId];
 
-                let block = `[🌟 BÀI TRẢ LỜI MỚI CẬP NHẬT]\n[Mã bài: ${ans.guid}]\n`;
+                let block = `[🌟 BÀI TRẢ LỜI MỚI CẬP NHẬT]\n[Mã ID: ${ans.id}]\n`;
                 
                 if (matchedQuestion) {
-                    block += `=== HỎI ===\n👤 Người hỏi: ${matchedQuestion.creator} | ⏱ ${matchedQuestion.pubDate}\n${matchedQuestion.text}\n\n`;
-                    block += `=== ĐÁP ===\n👤 Người trả lời: ${ans.creator} | ⏱ ${ans.pubDate}\n${ans.text}\n`;
+                    block += `=== HỎI ===\n👤 Người hỏi: ${matchedQuestion.author} | ⏱ ${matchedQuestion.date}\n${matchedQuestion.text}\n\n`;
+                    block += `=== ĐÁP ===\n👤 Người trả lời: ${ans.author} | ⏱ ${ans.date}\n${ans.text}\n`;
                 } else {
-                    block += `=== ĐÁP (Chưa quét được câu hỏi gốc) ===\n`;
-                    if (ans.replyToName) block += `📌 Đang trả lời cho: ${ans.replyToName} (Link: ${ans.replyLink})\n`;
-                    block += `👤 Người trả lời: ${ans.creator} | ⏱ ${ans.pubDate}\n${ans.text}\n`;
+                    block += `=== ĐÁP (Chưa quét được câu hỏi gốc mang ID: ${ans.parentId}) ===\n`;
+                    block += `👤 Người trả lời: ${ans.author} | ⏱ ${ans.date}\n${ans.text}\n`;
                 }
                 block += `\n----------------------------------------------------------------------\n\n`;
                 pairedOutput += block;
             });
 
-            questions.forEach(q => {
-                let block = `[🌟 CÂU HỎI MỚI - CHỜ PHẢN HỒI]\n[Mã bài: ${q.guid}]\n`;
-                block += `=== HỎI ===\n👤 Người hỏi: ${q.creator} | ⏱ ${q.pubDate}\n${q.text}\n`;
+            // Xử lý các câu hỏi mới chưa được trả lời
+            currentQuestions.forEach(q => {
+                let block = `[🌟 CÂU HỎI MỚI - CHỜ PHẢN HỒI]\n[Mã ID: ${q.id}]\n`;
+                block += `=== HỎI ===\n👤 Người hỏi: ${q.author} | ⏱ ${q.date}\n${q.text}\n`;
                 block += `\n----------------------------------------------------------------------\n\n`;
                 standaloneOutput += block;
             });
 
-            // 3. Tổng hợp Output (Chỉ hiển thị cập nhật mới)
+            // Tổng hợp Output
             const now = new Date();
-            finalOutputText = `=== BÁO CÁO HỎI ĐÁP RSS CẬP NHẬT ===\nNgày xuất tệp: ${now.toLocaleString('vi-VN')}\n==================================================\n\n`;
+            finalOutputText = `=== BÁO CÁO HỎI ĐÁP API ĐÃ GHÉP NỐI CHÍNH XÁC ===\nNgày xuất tệp: ${now.toLocaleString('vi-VN')}\n==================================================\n\n`;
             
             if (newItemsCount === 0) {
-                finalOutputText += "Không có câu hỏi hoặc câu trả lời nào mới so với lần quét trước.\n";
+                finalOutputText += "Chưa có bình luận hoặc câu trả lời nào mới so với lần quét trước.\n";
             } else {
                 finalOutputText += pairedOutput + standaloneOutput;
             }
 
-            statusText.innerText = `✅ Đã quét ${items.length} mục. Phát hiện ${newItemsCount} mục MỚI.`;
+            // Dọn dẹp Database (giới hạn lưu 500 câu hỏi để trình duyệt không quá tải)
+            const dbKeys = Object.keys(questionDB);
+            if (dbKeys.length > 500) {
+                const keysToRemove = dbKeys.slice(0, dbKeys.length - 500);
+                keysToRemove.forEach(key => delete questionDB[key]);
+            }
+            
+            // Lưu trạng thái vào trình duyệt
+            localStorage.setItem('processed_api_ids', JSON.stringify(Array.from(processedIds)));
+            localStorage.setItem('api_question_db', JSON.stringify(questionDB));
+
+            statusText.innerText = `✅ Đã quét ${comments.length} bình luận. Phát hiện ${newItemsCount} nội dung MỚI.`;
             statusText.style.color = "#34a853";
             
             previewBox.innerHTML = finalOutputText.replace(/\[🌟 BÀI TRẢ LỜI MỚI CẬP NHẬT\]/g, '<span style="color:#fbbc04; font-weight:bold;">[🌟 BÀI TRẢ LỜI MỚI CẬP NHẬT]</span>')
@@ -176,12 +170,14 @@
             if (newItemsCount > 0) document.getElementById('downloadBtn').style.display = "inline-block";
 
         } catch (error) {
-            statusText.innerText = "Lỗi khi lấy dữ liệu. Hãy đảm bảo bạn đã cấu hình _redirects trên Netlify.";
+            statusText.innerText = "Lỗi kết nối. Hãy đảm bảo tệp _redirects đã được lưu thành công trên Netlify và trỏ đúng đường dẫn.";
             statusText.style.color = "red";
+            console.error(error);
         }
     }
 
-    function formatDate(dateString) {
+    // Chuyển đổi ngày tháng dạng ISO (2026-09-30T22:03:04)
+    function formatAPIDate(dateString) {
         if(!dateString) return "Không rõ thời gian";
         try {
             const d = new Date(dateString);
@@ -198,19 +194,19 @@
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `CapNhat_HoiDap_${dateStr}.txt`;
+        a.download = `DuLieu_GhepNoi_API_${dateStr}.txt`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
     }
 
     function clearHistory() {
-        if(confirm("Bạn có chắc muốn xóa toàn bộ bộ nhớ câu hỏi và lịch sử quét? Ứng dụng sẽ phải bắt đầu học lại từ đầu.")) {
-            localStorage.removeItem('processed_rss_guids');
-            localStorage.removeItem('question_db');
-            processedGuids.clear();
-            questionDB = [];
-            document.getElementById('statusText').innerText = "Đã xóa toàn bộ dữ liệu. Vui lòng chạy lại.";
+        if(confirm("Bạn có chắc muốn xóa toàn bộ bộ nhớ? Ứng dụng sẽ tính tất cả dữ liệu là mới trong lần quét kế tiếp.")) {
+            localStorage.removeItem('processed_api_ids');
+            localStorage.removeItem('api_question_db');
+            processedIds.clear();
+            questionDB = {};
+            document.getElementById('statusText').innerText = "Đã dọn dẹp Database. Vui lòng quét lại.";
             document.getElementById('statusText').style.color = "#ea4335";
         }
     }
