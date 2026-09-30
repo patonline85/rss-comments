@@ -1,1 +1,1 @@
-/api/rss    https://lujunhong2or.com/comments/feed/    200
+/api/comments    https://lujunhong2or.com/wp-json/wp/v2/comments?per_page=100    200
